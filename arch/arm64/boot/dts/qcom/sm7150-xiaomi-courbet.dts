@@ -13,6 +13,7 @@
 /delete-node/ &ipa_fw_mem;
 /delete-node/ &ipa_gsi_mem;
 /delete-node/ &gpu_mem;
+/delete-node/ &tz_mem;
 
 / {
 	model = "Xiaomi Mi 11 Lite 4G";
@@ -21,6 +22,11 @@
 	qcom,board-id = <45 0>;
 
 	reserved-memory {
+		tz_mem: trust-zone@86200000 {
+			reg = <0x0 0x86200000 0x0 0x4900000>;
+			no-map;
+		};
+
 		adsp_mem: adsp@95700000 {
 			reg = <0x0 0x95700000 0x0 0x2600000>;
 			no-map;
