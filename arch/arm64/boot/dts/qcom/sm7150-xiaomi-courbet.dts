@@ -70,12 +70,12 @@
 
 &gpu {
 	zap-shader {
-		firmware-name = "qcom/sm7150/courbet/a615_zap.mbn";
+		firmware-name = "qcom/sm7150/xiaomi/courbet/a615_zap.mbn";
 	};
 };
 
 &ipa {
-	firmware-name = "qcom/sm7150/courbet/ipa_fws.mbn";
+	firmware-name = "qcom/sm7150/xiaomi/courbet/ipa_fws.mbn";
 };
 
 &i2c7 {
@@ -116,15 +116,15 @@
 };
 
 &remoteproc_adsp {
-	firmware-name = "qcom/sm7150/courbet/adsp.mbn";
+	firmware-name = "qcom/sm7150/xiaomi/courbet/adsp.mbn";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "qcom/sm7150/courbet/cdsp.mbn";
+	firmware-name = "qcom/sm7150/xiaomi/courbet/cdsp.mbn";
 };
 
 &remoteproc_mpss {
-	firmware-name = "qcom/sm7150/courbet/modem.mbn";
+	firmware-name = "qcom/sm7150/xiaomi/courbet/modem.mbn";
 };
 
 &sdhc_2 {
@@ -146,5 +146,5 @@
 };
 
 &venus {
-	firmware-name = "qcom/sm7150/courbet/venus.mbn";
+	firmware-name = "qcom/sm7150/xiaomi/courbet/venus.mbn";
 };
