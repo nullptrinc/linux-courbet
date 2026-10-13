@@ -23,6 +23,16 @@
 
 	qcom,board-id = <45 0>;
 
+	panel_dvdd: regulator-panel-dvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-dvdd";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		gpio = <&tlmm 30 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <4000>;
+	};
+
 	reserved-memory {
 		/* Match the owner's Android ramoops layout for recovery logs. */
 		ramoops@b0000000 {
@@ -111,6 +121,7 @@
 };
 
 &panel {
+	dvdde-supply = <&panel_dvdd>;
 	compatible = "mdss,k9a-36-02-0a-mp-dsc";
 };
 
@@ -127,6 +138,8 @@
 };
 
 &remoteproc_adsp {
+	/* Audio/sensor PD userspace services are not ready for bring-up. */
+	status = "disabled";
 	firmware-name = "qcom/sm7150/xiaomi/courbet/adsp.mbn";
 };
 
