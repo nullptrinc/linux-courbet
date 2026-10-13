@@ -7,6 +7,8 @@
 
 #include "sm7150-xiaomi-common.dtsi"
 
+/delete-node/ &{/reserved-memory/ramoops@9d800000};
+
 /delete-node/ &adsp_mem;
 /delete-node/ &wlan_msa_mem;
 /delete-node/ &npu_mem;
@@ -22,6 +24,15 @@
 	qcom,board-id = <45 0>;
 
 	reserved-memory {
+		/* Match the owner's Android ramoops layout for recovery logs. */
+		ramoops@b0000000 {
+			compatible = "ramoops";
+			reg = <0x0 0xb0000000 0x0 0x400000>;
+			record-size = <0>;
+			console-size = <0x200000>;
+			pmsg-size = <0x200000>;
+		};
+
 		tz_mem: trust-zone@86200000 {
 			reg = <0x0 0x86200000 0x0 0x4900000>;
 			no-map;
