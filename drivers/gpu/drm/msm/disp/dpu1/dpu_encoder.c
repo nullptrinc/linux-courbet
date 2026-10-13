@@ -674,7 +674,7 @@ void dpu_encoder_update_topology(struct drm_encoder *drm_enc,
 
 	dsc = dpu_encoder_get_dsc_config(drm_enc);
 
-	/* We only support 2 DSC mode (with 2 LM and 1 INTF) */
+	/* Select the DSC topology according to available hardware and slices. */
 	if (dsc) {
 		/*
 		 * Use 2 DSC encoders, 2 layer mixers and 1 or 2 interfaces
@@ -689,6 +689,10 @@ void dpu_encoder_update_topology(struct drm_encoder *drm_enc,
 			topology->num_dsc = 2;
 		else
 			topology->num_dsc = 1;
+
+		/* A complete DSC slice must fit within each encoder input. */
+		topology->num_dsc = min_t(unsigned int, topology->num_dsc,
+					 dsc->slice_count);
 	}
 
 	connector = drm_atomic_get_new_connector_for_encoder(state, drm_enc);
