@@ -140,11 +140,11 @@ struct mipi_dsi_host *of_find_mipi_dsi_host_by_node(struct device_node *node);
 #define MIPI_DSI_HS_PKT_END_ALIGNED	BIT(12)
 
 enum mipi_dsi_pixel_format {
-	MIPI_DSI_FMT_RGB101010,
 	MIPI_DSI_FMT_RGB888,
 	MIPI_DSI_FMT_RGB666,
 	MIPI_DSI_FMT_RGB666_PACKED,
 	MIPI_DSI_FMT_RGB565,
+	MIPI_DSI_FMT_RGB101010,
 };
 
 #define DSI_DEV_NAME_SIZE		20
