@@ -8,6 +8,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
 
@@ -22,6 +23,7 @@ struct k9a_36_02_0a_mp_dsc {
 	struct mipi_dsi_device *dsi;
 	struct drm_dsc_config dsc;
 	struct gpio_desc *reset_gpio;
+	struct regulator_bulk_data supplies[3];
 	bool prepared;
 };
 
@@ -151,38 +153,65 @@ static int k9a_36_02_0a_mp_dsc_prepare(struct drm_panel *panel)
 	struct k9a_36_02_0a_mp_dsc *ctx = to_k9a_36_02_0a_mp_dsc(panel);
 	struct device *dev = &ctx->dsi->dev;
 	struct drm_dsc_picture_parameter_set pps;
-	int ret;
+	int ret, i;
 
 	if (ctx->prepared)
 		return 0;
+
+	/* Match Android: VDDIO, DVDD enable, then the 3.0 V analog rail. */
+	for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++) {
+		ret = regulator_enable(ctx->supplies[i].consumer);
+		if (ret) {
+			while (i--)
+				regulator_disable(ctx->supplies[i].consumer);
+			return ret;
+		}
+	}
+	usleep_range(10000, 11000);
 
 	k9a_36_02_0a_mp_dsc_reset(ctx);
 
 	ret = k9a_36_02_0a_mp_dsc_on(ctx);
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		return ret;
+		goto power_off;
 	}
+
+	/* The vendor DSC 1.1 decoder uses the C-model range-0 max QP. */
+	ctx->dsc.rc_range_params[0].range_max_qp = 8;
 
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
 	ret = mipi_dsi_picture_parameter_set(ctx->dsi, &pps);
 	if (ret < 0) {
 		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
-		return ret;
+		goto power_off;
 	}
 
 	ret = mipi_dsi_compression_mode(ctx->dsi, true);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable compression mode: %d\n", ret);
-		return ret;
+		goto power_off;
 	}
 
 	msleep(28); /* TODO: Is this panel-dependent? */
 
+	{
+		u8 power_mode = 0;
+		ssize_t n = mipi_dsi_dcs_read(ctx->dsi, MIPI_DCS_GET_POWER_MODE,
+					    &power_mode, sizeof(power_mode));
+
+		dev_info(dev, "panel power-mode read: %zd, value=%#02x\n",
+			 n, power_mode);
+	}
+
 	ctx->prepared = true;
 	return 0;
+
+power_off:
+	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
+	return ret;
 }
 
 static int k9a_36_02_0a_mp_dsc_unprepare(struct drm_panel *panel)
@@ -199,6 +228,9 @@ static int k9a_36_02_0a_mp_dsc_unprepare(struct drm_panel *panel)
 		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+	msleep(20);
+	regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
+	msleep(100);
 
 	ctx->prepared = false;
 	return 0;
@@ -214,8 +246,8 @@ static const struct drm_display_mode k9a_36_02_0a_mp_dsc_mode = {
 	.vsync_start = 2400 + 1212,
 	.vsync_end = 2400 + 1212 + 4,
 	.vtotal = 2400 + 1212 + 4 + 8,
-	.width_mm = 683,
-	.height_mm = 1517,
+	.width_mm = 68,
+	.height_mm = 152,
 };
 
 static int k9a_36_02_0a_mp_dsc_get_modes(struct drm_panel *panel,
@@ -288,6 +320,16 @@ static int k9a_36_02_0a_mp_dsc_probe(struct mipi_dsi_device *dsi)
 	if (!ctx)
 		return -ENOMEM;
 
+	ctx->supplies[0].supply = "vddio";
+	ctx->supplies[1].supply = "dvdde";
+	ctx->supplies[2].supply = "vdd3p3";
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ctx->supplies), ctx->supplies);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to get panel supplies\n");
+	ret = regulator_set_voltage(ctx->supplies[0].consumer, 1880000, 1880000);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to set VDDIO voltage\n");
+
 	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
@@ -297,7 +339,8 @@ static int k9a_36_02_0a_mp_dsc_probe(struct mipi_dsi_device *dsi)
 	mipi_dsi_set_drvdata(dsi, ctx);
 
 	dsi->lanes = 4;
-	dsi->format = MIPI_DSI_FMT_RGB101010;
+	/* DSC input depth is independent of the DSI transport bus format. */
+	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS | MIPI_DSI_MODE_LPM;
 
@@ -328,7 +371,7 @@ static int k9a_36_02_0a_mp_dsc_probe(struct mipi_dsi_device *dsi)
 	WARN_ON(1080 % ctx->dsc.slice_width);
 	ctx->dsc.slice_count = 1080 / ctx->dsc.slice_width;
 	ctx->dsc.bits_per_component = 10;
-	ctx->dsc.bits_per_pixel = 10 << 4; /* 4 fractional bits */
+	ctx->dsc.bits_per_pixel = 8 << 4; /* 4 fractional bits */
 	ctx->dsc.block_pred_enable = true;
 
 	ret = mipi_dsi_attach(dsi);
