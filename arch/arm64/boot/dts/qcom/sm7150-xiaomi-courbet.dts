@@ -145,6 +145,22 @@
 	/* ir-spi @ 0 */
 };
 
-&venus {
-	firmware-name = "qcom/sm7150/xiaomi/courbet/venus.mbn";
+
+/* Initial RAM-resident Linux bring-up: keep unsupported subsystems off. */
+&ipa {
+	status = "disabled";
+};
+
+&remoteproc_cdsp {
+	status = "disabled";
+};
+
+/* MPSS hosts the WLAN protection domain; retain it for ath10k. */
+
+&bluetooth {
+	status = "disabled";
+};
+
+&nxp {
+	status = "disabled";
 };

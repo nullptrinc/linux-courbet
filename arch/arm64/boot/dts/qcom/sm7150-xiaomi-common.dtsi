@@ -867,9 +867,6 @@
 	status = "okay";
 };
 
-&venus {
-	//status = "okay";
-};
 
 &wifi {
 	vdd-0.8-cx-mx-supply = <&vdd_wcss_cx>;
