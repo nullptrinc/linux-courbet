@@ -150,6 +150,11 @@
 	/* ti,bq25968 (charger) @ 66 */
 };
 
+/* The populated rear flash output is described in sm7150-xiaomi-common.dtsi. */
+&pm6150l_flash {
+	status = "okay";
+};
+
 &panel {
 	dvdde-supply = <&panel_dvdd>;
 	compatible = "mdss,k9a-36-02-0a-mp-dsc";
