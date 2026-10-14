@@ -153,6 +153,17 @@
 /* The populated rear flash output is described in sm7150-xiaomi-common.dtsi. */
 &pm6150l_flash {
 	status = "okay";
+
+	/* The second output reports a short/open fault on the tested handset. */
+	led-2 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_WHITE>;
+		led-sources = <2>;
+		led-max-microamp = <150000>;
+		flash-max-microamp = <1000000>;
+		flash-max-timeout-us = <1280000>;
+		status = "disabled";
+	};
 };
 
 &panel {
