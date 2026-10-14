@@ -126,6 +126,15 @@ config INPUT_ATMEL_CAPTOUCH
 	  To compile this driver as a module, choose M here: the
 	  module will be called atmel_captouch.
 
+config INPUT_AW8624
+	tristate "Awinic AW8624 haptics on Xiaomi courbet"
+	depends on I2C
+	select INPUT_FF_MEMLESS
+	select REGMAP_I2C
+	help
+	  Continuous-mode rumble support for the AW8624 LRA haptic controller
+	  on Xiaomi Mi 11 Lite 4G. No vendor waveform firmware is required.
+
 config INPUT_AW86927
 	tristate "Awinic AW86927 Haptic Driver Support"
 	depends on I2C && INPUT

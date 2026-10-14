@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/xiaomi,courbet-aw8624.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Xiaomi courbet Awinic AW8624 haptic controller
+
+maintainers:
+  - moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+
+description: |
+  AW8624 haptics using continuous drive without waveform firmware. The courbet
+  compatible selects this board's factory braking and BEMF profile. Other boards
+  need their own validated profile before they can be supported.
+
+properties:
+  compatible:
+    const: xiaomi,courbet-aw8624
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: Active-low hardware reset.
+
+  awinic,resonant-frequency-hz:
+    minimum: 100
+    maximum: 300
+    description: Nominal LRA motor resonance, used to program the F_PRE registers.
+
+  awinic,drive-level:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 255
+    description: Board's maximum DRV_LVL register value at full rumble strength.
+
+  awinic,overdrive-level:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 255
+    description: Board's maximum DRV_LVL_OV register value at full rumble strength.
+
+  awinic,continuous-delay:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 65535
+    description: Factory TD_H and TD_L register pair, including braking time.
+
+  awinic,zero-cross-threshold:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 65535
+    description: Factory ZC_THRSH_H and ZC_THRSH_L register pair.
+
+required:
+  - compatible
+  - reg
+  - reset-gpios
+  - awinic,resonant-frequency-hz
+  - awinic,drive-level
+  - awinic,overdrive-level
+  - awinic,continuous-delay
+  - awinic,zero-cross-threshold
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        haptics@5a {
+            compatible = "xiaomi,courbet-aw8624";
+            reg = <0x5a>;
+            reset-gpios = <&tlmm 4 GPIO_ACTIVE_LOW>;
+            awinic,resonant-frequency-hz = <205>;
+            awinic,drive-level = <106>;
+            awinic,overdrive-level = <155>;
+            awinic,continuous-delay = <0xf06c>;
+            awinic,zero-cross-threshold = <0x08f8>;
+        };
+    };
