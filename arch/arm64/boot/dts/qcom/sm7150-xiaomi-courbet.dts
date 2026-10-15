@@ -184,9 +184,12 @@
 };
 
 &remoteproc_adsp {
-	/* Audio/sensor PD userspace services are not ready for bring-up. */
-	status = "disabled";
+	/*
+	 * Hosts the Snapdragon Sensor Core. Userspace must serve both the root
+	 * PD and sensorspd over FastRPC, or the sensors PD watchdog fires.
+	 */
 	firmware-name = "qcom/sm7150/xiaomi/courbet/adsp.mbn";
+	status = "okay";
 };
 
 &remoteproc_cdsp {
