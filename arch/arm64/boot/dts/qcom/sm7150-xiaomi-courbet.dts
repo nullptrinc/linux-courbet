@@ -52,6 +52,15 @@
 		startup-delay-us = <4000>;
 	};
 
+	fingerprint {
+		compatible = "nullptrinc,courbet-fpc";
+		power-gpios = <&tlmm 63 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 65 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&tlmm 91 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&fingerprint_pins>;
+	};
+
 	reserved-memory {
 		/* Match the owner's Android ramoops layout for recovery logs. */
 		ramoops@b0000000 {
@@ -262,6 +271,13 @@
 };
 
 &tlmm {
+	fingerprint_pins: fingerprint-pins {
+		pins = "gpio63", "gpio65", "gpio91";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
 	haptics_reset: haptics-reset-state {
 		pins = "gpio4";
 		function = "gpio";

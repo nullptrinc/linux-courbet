@@ -644,6 +644,13 @@ config MCHP_LAN966X_PCI
 	    - lan966x-miim (MDIO_MSCC_MIIM)
 	    - lan966x-switch (LAN966X_SWITCH)
 
+config COURBET_FPC
+	tristate "Xiaomi courbet FPC power and IRQ transport"
+	depends on OF && GPIOLIB
+	help
+	  Controls the FPC sensor power/reset pins and exposes its IRQ through
+	  /dev/courbet-fpc. Fingerprint data remains in the secure world.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
