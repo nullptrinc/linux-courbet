@@ -30,10 +30,10 @@ config LOGO_LINUX_CLUT224
 	bool "Standard 224-color Linux logo"
 	default y
 
-config LOGO_NEWLUNIX_CLUT224
-	bool "Newlunix 224-color boot emblem"
+config LOGO_LUNAR_CLUT224
+	bool "Project Lunar 224-color boot emblem"
 	help
-	  Display the Newlunix emblem supplied by the device owner.
+	  Display the Project Lunar emblem supplied by the device owner.
 
 config LOGO_DEC_CLUT224
 	bool "224-color Digital Equipment Corporation Linux logo"
