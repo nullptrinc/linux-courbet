@@ -253,3 +253,10 @@ config SND_SOC_X1E80100
 	  Say Y or M if you want to use audio device on this SoCs.
 
 endif #SND_SOC_QCOM
+
+config SND_SOC_COURBET
+	tristate "Xiaomi courbet speaker audio"
+	depends on QCOM_APR && I2C && COMMON_CLK
+	select SND_SOC_QDSP6
+	select SND_SOC_QCOM_COMMON
+	select SND_SOC_TFA9873

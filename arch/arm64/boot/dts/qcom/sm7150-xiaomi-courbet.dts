@@ -300,3 +300,5 @@
 };
 
 #include "courbet-power.dtsi"
+
+#include "courbet-audio.dtsi"

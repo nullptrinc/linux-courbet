@@ -1172,6 +1172,16 @@ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
 	return ret;
 }
 
+/* In-band vendor parameters share the serialized AFE port command path. */
+int q6afe_port_set_vendor_param(struct q6afe_port *port, u32 module_id,
+                               u32 param_id, const void *data, size_t size)
+{
+	if (!port || !data || !size || size > 4096)
+		return -EINVAL;
+	return q6afe_port_set_param_v2(port, (void *)data, param_id, module_id, size);
+}
+EXPORT_SYMBOL_GPL(q6afe_port_set_vendor_param);
+
 static int q6afe_port_set_lpass_clock(struct q6afe_port *port,
 				 struct afe_clk_cfg *cfg)
 {

@@ -271,4 +271,6 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 			     const char *client_name, uint32_t *client_handle);
 int q6afe_unvote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 			       uint32_t client_handle);
+int q6afe_port_set_vendor_param(struct q6afe_port *port, u32 module_id,
+                               u32 param_id, const void *data, size_t size);
 #endif /* __Q6AFE_H__ */

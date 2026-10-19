@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+
+/ {
+	sound {
+		compatible = "xiaomi,courbet-audio";
+		model = "courbet";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pri_mi2s_active &pri_mi2s_ws_active>;
+		widgets = "Speaker", "Top Speaker", "Speaker", "Bottom Speaker";
+		audio-routing = "Top Speaker", "RCV OUTL",
+				"Bottom Speaker", "SPK OUTL";
+
+		multimedia1-dai-link {
+			link-name = "MultiMedia1";
+			cpu { sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>; };
+		};
+		primary-mi2s-dai-link {
+			link-name = "Primary MI2S";
+			cpu { sound-dai = <&q6afedai PRIMARY_MI2S_RX>; };
+			platform { sound-dai = <&q6routing>; };
+			codec { sound-dai = <&tfa_rcv>, <&tfa_spk>; };
+		};
+	};
+};
+
+&q6afedai {
+	dai@10 {
+		reg = <PRIMARY_MI2S_RX>;
+		qcom,sd-lines = <0>;
+	};
+};
+
+&i2c7 {
+	tfa_rcv: amplifier@34 {
+		compatible = "tfa,tfa9873";
+		reg = <0x34>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "RCV";
+		reset-gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+		irq-gpio = <&tlmm 90 GPIO_ACTIVE_HIGH>;
+		spk-sw-gpio = <&tlmm 110 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tfa_reset &tfa_rcv_irq &tfa_spk_switch>;
+	};
+	tfa_spk: amplifier@35 {
+		compatible = "tfa,tfa9873";
+		reg = <0x35>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SPK";
+		irq-gpio = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tfa_spk_irq>;
+	};
+};
+
+&pri_mi2s_active {
+	drive-strength = <8>;
+	bias-disable;
+};
+&pri_mi2s_ws_active {
+	drive-strength = <8>;
+	bias-disable;
+};
+&tlmm {
+	tfa_reset: tfa-reset-state {
+		pins = "gpio66";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+	tfa_rcv_irq: tfa-rcv-irq-state {
+		pins = "gpio90";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+	tfa_spk_irq: tfa-spk-irq-state {
+		pins = "gpio11";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+	tfa_spk_switch: tfa-spk-switch-state {
+		pins = "gpio110";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
+
+&q6asmdai {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		direction = <Q6ASM_DAI_RX>;
+	};
+};
