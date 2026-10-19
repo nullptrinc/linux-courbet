@@ -4,17 +4,18 @@
 $id: http://devicetree.org/schemas/power/supply/xiaomi,courbet-power.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Xiaomi courbet PM6150 battery and USB telemetry
+title: Xiaomi courbet PM6150 charging policy and battery gauge
 
 maintainers:
   - moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
 
 description: |
-  Read-only monitoring of the PM6150 QGauge at 0x4800, SMB5 charger at 0x1000,
+  Native control of the PM6150 QGauge at 0x4800, SMB5 charger at 0x1000,
   USB input at 0x1300, and ADC5 battery thermistor and input voltage channels.
-  This board-specific driver does not initialize or alter the charger policy.
+  The driver owns normal charging limits, termination, thermal protection and
+  QGauge FIFO coulomb accounting.
   The monitored battery supplies design values and OCV/temperature curves.
-  Capacity is a terminal-voltage estimate, not a learned coulomb count.
+  Battery voltage/impedance anchors the coulomb counter at initialization/rest.
 
 properties:
   compatible:
@@ -23,17 +24,28 @@ properties:
     maxItems: 1
   monitored-battery:
     $ref: /schemas/types.yaml#/definitions/phandle
+  power-supplies:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 1
+  interrupts:
+    maxItems: 1
+  interrupt-names:
+    const: qg-fifo-done
   io-channels:
-    maxItems: 2
+    maxItems: 3
   io-channel-names:
     items:
       - const: batt-therm
       - const: usbin-v
+      - const: die-temp
 
 required:
   - compatible
   - reg
   - monitored-battery
+  - power-supplies
+  - interrupts
+  - interrupt-names
   - io-channels
   - io-channel-names
 

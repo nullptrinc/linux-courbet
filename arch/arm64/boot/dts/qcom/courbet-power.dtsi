@@ -2,7 +2,7 @@
 / {
 	courbet_battery: battery {
 		compatible = "simple-battery";
-		/* OEM K9A 4250 mAh cosmx profile; voltage-based SOC is an estimate. */
+		/* OEM K9A 4250 mAh cosmx profile; OCV anchor for the native coulomb counter. */
 		charge-full-design-microamp-hours = <4250000>;
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4480000>;
@@ -362,8 +362,23 @@
 		compatible = "xiaomi,courbet-power";
 		reg = <0x4800>;
 		monitored-battery = <&courbet_battery>;
+		power-supplies = <&pm6150_typec>;
+		interrupts = <0x0 0x48 0x3 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "qg-fifo-done";
 		io-channels = <&pm6150_adc ADC5_BAT_THERM_100K_PU>,
-			      <&pm6150_adc ADC5_USB_IN_V_16>;
-		io-channel-names = "batt-therm", "usbin-v";
+			      <&pm6150_adc ADC5_USB_IN_V_16>,
+			      <&pm6150_adc ADC5_DIE_TEMP>;
+		io-channel-names = "batt-therm", "usbin-v", "die-temp";
+	};
+};
+
+&pm6150_typec {
+	connector {
+		power-role = "dual";
+		try-power-role = "sink";
+		/* Native normal charging uses a 5 V contract. */
+		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+		op-sink-microwatt = <7500000>;
 	};
 };

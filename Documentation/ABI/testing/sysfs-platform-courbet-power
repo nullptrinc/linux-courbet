@@ -1,0 +1,32 @@
+What:           /sys/class/power_supply/battery/device/soc_state
+Date:           October 2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Linux-owned gauge persistence snapshot, not Android SDAM.
+                Format: version unix_seconds charge_uah compensated_ocv_uv full.
+                Version is 1. Reads are coherent under the gauge mutex.
+                A root write restores once, only within 60 seconds of probe,
+                with age <= 1 hour, valid charge/voltage bounds and an OCV
+                difference <= 150 mV. full is 0/1 and accepted only near full.
+                Intended for lunar-power-state, which saves on /data atomically.
+                ADC calibration and Android battery state are never written.
+
+What:           /sys/class/power_supply/battery/device/gauge_diagnostics
+Date:           October 2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                FIFO event/error counts, persistence restore flag, compensated
+                OCV, modeled impedance, thermal block, last policy error and
+                source-current cap. An error count identifies missing coverage;
+                it must not be interpreted as a validated charge measurement.
+
+What:           /sys/class/power_supply/battery/device/charger_safety_test
+Date:           October 2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Root writes 1 during normal 15..40 C charging to test the real
+                hard JEITA comparator. Temporarily lowers the hot cutoff below
+                measured temperature, waits at most 5 seconds for hot status and
+                disabled trickle/precharge/full-on charge modes,
+                and always restores the production 45 C cutoff. No temperature
+                limit is raised. Reads: 0 not run, 1 passed, negative errno failed.
