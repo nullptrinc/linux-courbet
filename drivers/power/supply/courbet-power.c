@@ -666,7 +666,7 @@ static irqreturn_t courbet_fifo_irq(int irq, void *data)
 	courbet_soc_add(&p->soc, delta);
 	p->last_fifo_ns = now;
 	p->fifo_count++;
-	if (courbet_soc_percent(&p->soc) < 99)
+	if (p->soc.charge_uams < (s64)p->soc.full_uah * COURBET_UAMS_PER_UAH * 995 / 1000)
 		p->end.full = false;
 	if (elapsed > 40000)
 		p->fifo_errors++; /* missing coverage remains visible to diagnostics */
@@ -715,7 +715,7 @@ static ssize_t soc_state_store(struct device *dev, struct device_attribute *attr
 	    hold < -1 || hold > 100 || reason < 0 || reason > COURBET_END_TARGET ||
 	    ((hold == -1) != (reason == COURBET_END_NONE)) ||
 	    (version == 2 && full && (hold != 100 || reason != COURBET_END_FULL ||
-				     charge < (s64)p->soc.full_uah * 995 / 1000)) ||
+				     charge < (s64)p->soc.full_uah * 985 / 1000)) ||
 	    saved_time < 0 || saved_time > now + 5 || now - saved_time > 3600 ||
 	    ocv < 2500000 || ocv > 4600000 || abs(ocv - p->ocv_uv) > 150000)
 		ret = -EINVAL;
@@ -729,7 +729,10 @@ static ssize_t soc_state_store(struct device *dev, struct device_attribute *attr
 	} else {
 		p->soc.charge_uams = charge * COURBET_UAMS_PER_UAH;
 		p->restored = true;
-		p->end.full = full;
+		/* Older version2 snapshots may retain full between98.5 and99.5%.
+		 * Preserve the counter and completion hold, but display99% honestly.
+		 */
+		p->end.full = full && charge >= (s64)p->soc.full_uah * 995 / 1000;
 		p->end.hold_percent = hold;
 		p->end.reason = reason;
 		courbet_end_reset_taper(&p->end);
