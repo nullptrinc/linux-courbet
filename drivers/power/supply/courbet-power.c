@@ -21,6 +21,7 @@
 #include "courbet-power-model.h"
 #include "courbet-battery-profile.h"
 #include "courbet-fast-model.h"
+#include "courbet-charge-end.h"
 
 #define QG_TYPE 0x4804
 #define QG_SUBTYPE 0x4805
@@ -42,6 +43,7 @@ struct courbet_power {
 	struct power_supply *source, *pump;
 	struct mutex lock;
 	struct courbet_soc soc;
+	struct courbet_charge_end end;
 	s64 last_fifo_ns, boot_ns, rest_ns, next_pps_ns;
 	u32 fifo_count, fifo_errors;
 	int requested_fcc, requested_fv, requested_icl, end_threshold;
@@ -49,7 +51,8 @@ struct courbet_power {
 	int last_online, policy_error, ocv_uv, resistance_uohm, safety_test;
 	int pps_state, pps_uv, fast_error, contract_uv, contract_type, fast_thermal;
 	bool pps_attempted, fast_allowed;
-	bool limit_block, restored, ready, suspended, full;
+	bool limit_block, restored, ready, suspended;
+	int applied_recharge;
 	struct power_supply *battery, *usb;
 	struct power_supply_battery_info *info;
 	struct delayed_work poll;
@@ -106,7 +109,7 @@ static int courbet_status(struct courbet_power *p, int *value)
 		*value = POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (READ_ONCE(p->pps_state) == 2 && current_ua > 10000)
 		*value = POWER_SUPPLY_STATUS_CHARGING;
-	else if ((state & 7) == 5)
+	else if (READ_ONCE(p->end.full) && READ_ONCE(p->end.hold_percent) >= 0)
 		*value = POWER_SUPPLY_STATUS_FULL;
 	else if ((state & 7) >= 1 && (state & 7) <= 4 && current_ua > 10000)
 		*value = POWER_SUPPLY_STATUS_CHARGING;
@@ -166,7 +169,7 @@ static int courbet_charger_init(struct courbet_power *p)
 		{ 0x1060, 0xff, 0x03 }, /* OEM normal precharge setting */
 		{ 0x1061, 0xff, 0x08 }, /* 400 mA until policy validates sensors */
 		{ 0x1070, 0xff, 0x55 }, /* OEM normal FV: 3.6 V + 85 * 10 mV */
-		{ 0x106c, 0x01, 0x01 }, /* current termination: sample count */
+		{ 0x106c, 0x01, 0x00 }, /* PM6150 OEM synchronous ADC termination */
 		{ 0x106b, 0x0f, 0x0a }, /* 3 voltage samples for recharge */
 		{ 0x1051, 0x07, 0x04 }, /* voltage-based automatic recharge */
 		{ 0x10a2, 0xff, 0x02 }, /* 768 minute fast-charge safety timer */
@@ -198,13 +201,13 @@ static int courbet_charger_init(struct courbet_power *p)
 			goto fail;
 	}
 	/* Signed ADC termination thresholds, PM6150 10 A range, big endian. */
-	ret = courbet_write_be16(p, 0x1067, (u16)(s16)(-200 * 32767 / 10000));
+	ret = courbet_write_be16(p, 0x1067, (u16)(s16)(-100 * 32767 / 10000));
 	if (ret)
 		goto fail;
 	ret = courbet_write_be16(p, 0x1069, (u16)(s16)(50 * 32767 / 10000));
 	if (ret)
 		goto fail;
-	ret = courbet_write_be16(p, 0x107e, 4350 * 1000000LL / 194637);
+	ret = courbet_write_be16(p, 0x107e, 4200 * 1000000LL / 194637);
 	if (ret)
 		goto fail;
 	/* Autonomous 5..45 C hard window; 15/43 C soft health indications. */
@@ -220,6 +223,7 @@ static int courbet_charger_init(struct courbet_power *p)
 	ret = courbet_write_be16(p, 0x109a, courbet_therm_raw(50));
 	if (ret)
 		goto fail;
+	p->applied_recharge = 4200000;
 	p->last_online = -1;
 	p->policy_error = 0;
 	return 0;
@@ -493,7 +497,7 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	struct courbet_charge_limits limits;
 	unsigned int faults, thermal, state;
 	int online, ret, icl, percent, source_type, source_uv, pump, buck_icl;
-	bool enable;
+	bool enable, was_full = p->end.full;
 
 	ret = courbet_online(p, &online);
 	if (ret)
@@ -502,6 +506,8 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	if (ret)
 		goto fail;
 	ret = regmap_read(p->regmap, CHG_TEMP, &thermal);
+	if (!ret)
+		ret = regmap_read(p->regmap, CHG_STATE, &state);
 	if (ret)
 		goto fail;
 	if (online != p->last_online) {
@@ -525,6 +531,9 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 				       p->requested_fcc, p->requested_fv);
 	p->thermal_block = limits.thermal_block;
 	percent = courbet_soc_percent(&p->soc);
+	/* Conservative last-ten-percent cap while the independent taper is measured. */
+	if (percent >= 90)
+		limits.fcc_ua = min(limits.fcc_ua, 500000);
 	if (p->end_threshold < 100 && percent >= p->end_threshold)
 		p->limit_block = true;
 	if (percent <= max(p->end_threshold - 5, 0) || p->end_threshold == 100)
@@ -532,7 +541,9 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	enable = online && limits.fcc_ua >= 50000 && !p->limit_block &&
 		p->behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO &&
 		!(faults & BIT(1)) && !(thermal & 0x0f) &&
-		die_millic < 85000 && voltage_uv < 4500000;
+		die_millic < 85000 && voltage_uv < 4500000 &&
+		ktime_get_boottime_ns() - p->boot_ns >= 5LL * NSEC_PER_SEC &&
+		(p->restored || ktime_get_boottime_ns() - p->boot_ns > 60LL * NSEC_PER_SEC);
 	ret = courbet_adapter_config(p, &source_type, &source_uv);
 	if (ret)
 		goto fail;
@@ -541,6 +552,22 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 		icl = min(icl, 1500000);
 	if (die_millic >= 75000)
 		icl = min(icl, 500000);
+	if (courbet_end_update(&p->end, div_s64(ktime_get_boottime_ns(), NSEC_PER_MSEC),
+		enable && !p->pps_state,
+		p->end_threshold == 100 && limits.fv_uv == COURBET_MAX_FV_UV &&
+		limits.fcc_ua >= 500000 &&
+		icl >= 500000 && temp_deci_c >= 150 && temp_deci_c < 430,
+		state & 7, voltage_uv, current_ua, limits.fv_uv, percent))
+		enable = false;
+	if (p->end.full && !was_full)
+		p->soc.charge_uams = (s64)p->soc.full_uah * COURBET_UAMS_PER_UAH;
+	if (p->applied_recharge != courbet_recharge_uv(limits.fv_uv)) {
+		ret = courbet_write_be16(p, 0x107e,
+			(s64)courbet_recharge_uv(limits.fv_uv) * 1000 / 194637);
+		if (ret)
+			goto fail;
+		p->applied_recharge = courbet_recharge_uv(limits.fv_uv);
+	}
 	p->fast_thermal = courbet_fast_thermal_block(temp_deci_c, p->fast_thermal);
 	pump = courbet_fast_update(p,
 		!p->fast_thermal && courbet_pump_allowed(temp_deci_c, voltage_uv, limits.fv_uv,
@@ -574,15 +601,10 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	p->applied_fcc = limits.fcc_ua / 50000 * 50000;
 	p->applied_fv = limits.fv_uv / 10000 * 10000;
 	p->source_limit = icl;
-	if (!regmap_read(p->regmap, CHG_STATE, &state) && (state & 7) == 5 &&
-	    enable && !pump && p->end_threshold == 100 && temp_deci_c >= 150 &&
-	    temp_deci_c < 430 && voltage_uv >= limits.fv_uv - 50000) {
-		p->soc.charge_uams = (s64)p->soc.full_uah * COURBET_UAMS_PER_UAH;
-		p->full = true;
-	}
 	return 0;
 fail:
 	p->policy_error = ret;
+	courbet_end_reset_taper(&p->end);
 	courbet_fast_stop(p);
 	regmap_update_bits(p->regmap, 0x1042, 1, 0);
 	return ret;
@@ -645,7 +667,7 @@ static irqreturn_t courbet_fifo_irq(int irq, void *data)
 	p->last_fifo_ns = now;
 	p->fifo_count++;
 	if (courbet_soc_percent(&p->soc) < 99)
-		p->full = false;
+		p->end.full = false;
 	if (elapsed > 40000)
 		p->fifo_errors++; /* missing coverage remains visible to diagnostics */
 	goto out;
@@ -663,8 +685,9 @@ static ssize_t soc_state_show(struct device *dev, struct device_attribute *attr,
 	ssize_t len;
 
 	mutex_lock(&p->lock);
-	len = sysfs_emit(buf, "1 %lld %lld %d %d\n", (s64)ktime_get_real_seconds(),
-			 div_s64(p->soc.charge_uams, COURBET_UAMS_PER_UAH), p->ocv_uv, p->full);
+	len = sysfs_emit(buf, "2 %lld %lld %d %d %d %d\n", (s64)ktime_get_real_seconds(),
+			 div_s64(p->soc.charge_uams, COURBET_UAMS_PER_UAH), p->ocv_uv,
+			 p->end.full, p->end.hold_percent, p->end.reason);
 	mutex_unlock(&p->lock);
 	return len;
 }
@@ -674,24 +697,42 @@ static ssize_t soc_state_store(struct device *dev, struct device_attribute *attr
 {
 	struct courbet_power *p = dev_get_drvdata(dev);
 	long long saved_time, charge;
-	int version, ocv, full, ret = 0;
+	int version, ocv, full, hold = -1, reason = 0, fields, ret = 0;
 	s64 now = ktime_get_real_seconds();
 	char extra;
 
-	if (sscanf(buf, "%d %lld %lld %d %d %c",
-		   &version, &saved_time, &charge, &ocv, &full, &extra) != 5)
+	if (sscanf(buf, "%d", &version) != 1)
+		return -EINVAL;
+	fields = version == 1 ?
+		sscanf(buf, "%d %lld %lld %d %d %c",
+		       &version, &saved_time, &charge, &ocv, &full, &extra) :
+		sscanf(buf, "%d %lld %lld %d %d %d %d %c",
+		       &version, &saved_time, &charge, &ocv, &full, &hold, &reason, &extra);
+	if (!((version == 1 && fields == 5) || (version == 2 && fields == 7)))
 		return -EINVAL;
 	mutex_lock(&p->lock);
-	if (version != 1 || full < 0 || full > 1 || charge < 0 || charge > p->soc.full_uah ||
+	if (full < 0 || full > 1 || charge < 0 || charge > p->soc.full_uah ||
+	    hold < -1 || hold > 100 || reason < 0 || reason > COURBET_END_TARGET ||
+	    ((hold == -1) != (reason == COURBET_END_NONE)) ||
+	    (version == 2 && full && (hold != 100 || reason != COURBET_END_FULL ||
+				     charge < (s64)p->soc.full_uah * 995 / 1000)) ||
 	    saved_time < 0 || saved_time > now + 5 || now - saved_time > 3600 ||
 	    ocv < 2500000 || ocv > 4600000 || abs(ocv - p->ocv_uv) > 150000)
 		ret = -EINVAL;
 	else if (p->restored || ktime_get_boottime_ns() - p->boot_ns > 60LL * NSEC_PER_SEC)
 		ret = -EPERM;
-	else {
+	else if (version == 1 && full) {
+		/* Version1 may contain the known premature-termination100% anchor.
+		 * Keep the fresh OCV seed instead of importing that charge or flag.
+		 */
+		ret = -ESTALE;
+	} else {
 		p->soc.charge_uams = charge * COURBET_UAMS_PER_UAH;
 		p->restored = true;
-		p->full = full && charge >= (s64)p->soc.full_uah * 995 / 1000;
+		p->end.full = full;
+		p->end.hold_percent = hold;
+		p->end.reason = reason;
+		courbet_end_reset_taper(&p->end);
 	}
 	mutex_unlock(&p->lock);
 	if (!ret)
@@ -715,6 +756,23 @@ static ssize_t gauge_diagnostics_show(struct device *dev,
 	return len;
 }
 static DEVICE_ATTR_RO(gauge_diagnostics);
+
+static ssize_t charge_end_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct courbet_power *p = dev_get_drvdata(dev);
+	ssize_t len;
+
+	mutex_lock(&p->lock);
+	len = sysfs_emit(buf, "hold=%d hold_percent=%d full=%d reason=%d state=%d "
+			 "taper_ms=%lld recharge_uv=%d\n",
+			 p->end.hold_percent >= 0, p->end.hold_percent, p->end.full,
+			 p->end.reason, p->end.last_state,
+			 p->end.taper_start_ms ? p->end.taper_last_ms - p->end.taper_start_ms : 0,
+			 p->applied_recharge);
+	mutex_unlock(&p->lock);
+	return len;
+}
+static DEVICE_ATTR_RO(charge_end);
 
 /* Tightening a hardware cutoff exercises the real JEITA comparator without
  * heating the cell or allowing any temperature outside the production window.
@@ -779,7 +837,8 @@ static DEVICE_ATTR_RW(charger_safety_test);
 
 static struct attribute *courbet_power_attrs[] = {
 	&dev_attr_soc_state.attr, &dev_attr_gauge_diagnostics.attr,
-	&dev_attr_charger_safety_test.attr, &dev_attr_fast_charge.attr, NULL,
+	&dev_attr_charger_safety_test.attr, &dev_attr_fast_charge.attr,
+	&dev_attr_charge_end.attr, NULL,
 };
 ATTRIBUTE_GROUPS(courbet_power);
 
@@ -867,7 +926,7 @@ static int courbet_battery_get(struct power_supply *psy,
 			mutex_unlock(&p->lock);
 			return -EAGAIN;
 		}
-		value->intval = min(courbet_soc_percent(&p->soc), p->full ? 100 : 99);
+		value->intval = min(courbet_soc_percent(&p->soc), p->end.full ? 100 : 99);
 		mutex_unlock(&p->lock);
 		return 0;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
@@ -967,8 +1026,18 @@ static int courbet_battery_set(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX:
 		if (value->intval < 3600000 || value->intval > COURBET_MAX_FV_UV)
 			ret = -EINVAL;
-		else
+		else {
+			/* A higher requested target starts a new lower-FV completion cycle.
+			 * Never use this to clear a full, fault or premature-stop hold.
+			 */
+			if (value->intval > p->requested_fv && p->end.reason == COURBET_END_TARGET) {
+				p->end.hold_percent = -1;
+				p->end.reason = COURBET_END_NONE;
+				p->end.full = 0;
+			}
 			p->requested_fv = value->intval / 10000 * 10000;
+			courbet_end_reset_taper(&p->end);
+		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
 		if (value->intval < 5 || value->intval > 100)
@@ -1099,6 +1168,7 @@ static void courbet_poll(struct work_struct *work)
 		ret = iio_read_channel_processed(p->die, &die);
 	if (ret < 0 || voltage < 2500000 || voltage > 4700000 || abs(current_ua) > 10000000) {
 		p->policy_error = ret < 0 ? ret : -ERANGE;
+		courbet_end_reset_taper(&p->end);
 		courbet_fast_stop(p);
 		regmap_update_bits(p->regmap, 0x1042, 1, 0);
 		goto reschedule;
@@ -1107,7 +1177,7 @@ static void courbet_poll(struct work_struct *work)
 	p->resistance_uohm = courbet_resistance(p, temp, courbet_soc_percent(&p->soc));
 	p->ocv_uv = courbet_ocv_uv(voltage, current_ua, p->resistance_uohm);
 	/* Coulomb accounting drives SOC. Relaxed OCV only slowly corrects drift. */
-	if (abs(current_ua) < 50000) {
+	if (abs(current_ua) < 50000 && p->end.hold_percent < 0) {
 		if (!p->rest_ns)
 			p->rest_ns = now;
 		if (now - p->rest_ns > 300LL * NSEC_PER_SEC) {
@@ -1167,6 +1237,7 @@ static int courbet_power_suspend(struct device *dev)
 	WRITE_ONCE(p->suspended, true);
 	cancel_delayed_work_sync(&p->poll);
 	mutex_lock(&p->lock);
+	courbet_end_reset_taper(&p->end);
 	/* CP stops for suspend; SMB5 JEITA/termination and QG FIFO stay active. */
 	ret = courbet_fast_stop(p);
 	if (!ret)
@@ -1218,7 +1289,8 @@ static int courbet_power_probe(struct platform_device *pdev)
 	p->requested_fcc = COURBET_MAX_FCC_UA;
 	p->requested_fv = COURBET_MAX_FV_UV;
 	p->requested_icl = COURBET_MAX_ICL_UA;
-	p->fast_allowed = true;
+	p->fast_allowed = false; /* PPS hardware validation still pending. */
+	p->end.hold_percent = -1;
 	p->end_threshold = 100;
 	p->source = devm_power_supply_get_by_reference(p->dev, "power-supplies");
 	if (IS_ERR(p->source))

@@ -3,8 +3,14 @@ Date:           October 2026
 Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
 Description:
                 Linux-owned gauge persistence snapshot, not Android SDAM.
-                Format: version unix_seconds charge_uah compensated_ocv_uv full.
-                Version is 1. Reads are coherent under the gauge mutex.
+                Format: version unix_seconds charge_uah compensated_ocv_uv full
+                hold_percent reason. Version2 adds the last two fields.
+                hold_percent is -1 when active, otherwise0..100 at completion.
+                reason:0 active,1 full,2 premature termination,3 voltage guard,
+                4 user-target completion. Version1 non-full snapshots migrate;
+                version1 full anchors are rejected as stale.
+                Only sustained independently measured taper establishes full.
+                 Reads are coherent under the gauge mutex.
                 A root write restores once, only within 60 seconds of probe,
                 with age <= 1 hour, valid charge/voltage bounds and an OCV
                 difference <= 150 mV. full is 0/1 and accepted only near full.
@@ -30,3 +36,17 @@ Description:
                 disabled trickle/precharge/full-on charge modes,
                 and always restores the production 45 C cutoff. No temperature
                 limit is raised. Reads: 0 not run, 1 passed, negative errno failed.
+
+What:           /sys/class/power_supply/battery/device/charge_end
+Date:           October2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Completion hold, starting percentage, validated-full flag,
+                reason code (as above), last hardware charger state, measured
+                taper duration and programmed recharge voltage. Read only.
+                Every hardware termination holds charging off. A minute of
+                measured10..200 mA current near the normal FV is required to
+                anchor100%. A lower user FV completes without a full anchor.
+                Restart needs5 percentage points of counted discharge plus
+                30 s of low current and voltage below the recharge threshold.
+                Near-full SOC>=90% caps requested cell current to500 mA.
