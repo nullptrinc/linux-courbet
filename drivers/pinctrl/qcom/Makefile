@@ -75,3 +75,5 @@ obj-$(CONFIG_PINCTRL_SC8280XP_LPASS_LPI) += pinctrl-sc8280xp-lpass-lpi.o
 obj-$(CONFIG_PINCTRL_LPASS_LPI) += pinctrl-lpass-lpi.o
 obj-$(CONFIG_PINCTRL_X1E80100)	+= pinctrl-x1e80100.o
 obj-$(CONFIG_PINCTRL_TLMM_TEST) += tlmm-test.o
+
+obj-$(CONFIG_PINCTRL_SM7150_LPASS_LPI) += pinctrl-sm7150-lpass-lpi.o

@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Experimental native microphones; addresses, pins and supplies from Android. */
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+
+/ {
+ sound {
+  compatible = "xiaomi,courbet-audio";
+  model = "courbet";
+  audio-routing = "Top Speaker", "RCV OUTL", "Bottom Speaker", "SPK OUTL", "AMIC1", "MIC BIAS1", "AMIC3", "MIC BIAS3",
+                  "TX SWR_ADC0", "ADC1_OUTPUT", "TX SWR_ADC2", "ADC2_OUTPUT";
+  multimedia2-dai-link {
+   link-name = "MultiMedia2 Capture";
+   cpu { sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>; };
+  };
+  wcd-capture-dai-link {
+   link-name = "WCD Capture";
+   cpu { sound-dai = <&q6afedai TX_CODEC_DMA_TX_3>; };
+   platform { sound-dai = <&q6routing>; };
+   codec { sound-dai = <&wcd937x 1>, <&swr2 0>, <&txmacro 0>; };
+  };
+ };
+ wcd937x: audio-codec {
+  compatible = "qcom,wcd9370-codec";
+  #sound-dai-cells = <1>;
+  pinctrl-names = "default";
+  pinctrl-0 = <&wcd_reset_active>;
+  reset-gpios = <&lpass_tlmm 24 GPIO_ACTIVE_LOW>;
+  vdd-rxtx-supply = <&vreg_l10a_1p8>;
+  vdd-px-supply = <&vreg_l10a_1p8>;
+  vdd-buck-supply = <&vreg_l15a_1p8>;
+  vdd-mic-bias-supply = <&vreg_bob>;
+  qcom,micbias1-microvolt = <2750000>;
+  qcom,micbias2-microvolt = <2750000>;
+  qcom,micbias3-microvolt = <2750000>;
+  qcom,rx-device = <&wcd937x_rx>;
+  qcom,tx-device = <&wcd937x_tx>;
+ };
+};
+&soc {
+		vamacro: codec@62f20000 {
+			compatible = "qcom,sm7150-lpass-va-macro";
+			reg = <0 0x62f20000 0 0x1000>;
+			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				<&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+
+			clock-names = "mclk", "macro";
+
+			#clock-cells = <0>;
+			clock-output-names = "fsgen";
+			#sound-dai-cells = <1>;
+		};
+		rxmacro: rxmacro@62ee0000 {
+			pinctrl-names = "default";
+			pinctrl-0 = <&rx_swr_active>;
+			compatible = "qcom,sm7150-lpass-rx-macro";
+			reg = <0 0x62ee0000 0 0x1000>;
+			status = "okay";
+
+			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				<&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK  LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				<&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				<&vamacro>;
+
+			clock-names = "mclk", "npl", "macro", "fsgen";
+
+			#clock-cells = <0>;
+			clock-output-names = "mclk";
+			#sound-dai-cells = <1>;
+		};
+		swr1: soundwire@62ef0000 {
+			reg = <0 0x62ef0000 0 0x2000>;
+			compatible = "qcom,soundwire-v1.3.0";
+			status = "okay";
+			interrupts = <GIC_SPI 297 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&rxmacro>;
+			clock-names = "iface";
+			label = "RX";
+			qcom,din-ports = <0>;
+			qcom,dout-ports = <5>;
+
+			qcom,ports-sinterval-low =	/bits/ 8 <0x03 0x1f 0x1f 0x07 0x00>;
+			qcom,ports-offset1 =		/bits/ 8 <0x00 0x00 0x0b 0x01 0x00>;
+			qcom,ports-offset2 =		/bits/ 8 <0x00 0x00 0x0b 0x00 0x00>;
+			qcom,ports-hstart =		/bits/ 8 <0xff 0x03 0xff 0xff 0xff>;
+			qcom,ports-hstop =		/bits/ 8 <0xff 0x06 0xff 0xff 0xff>;
+			qcom,ports-word-length =	/bits/ 8 <0x01 0x07 0x04 0xff 0xff>;
+			qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0x00 0x01 0xff 0xff>;
+			qcom,ports-lane-control =	/bits/ 8 <0x01 0x00 0x00 0x00 0x00>;
+			qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0x00>;
+
+			#sound-dai-cells = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+		};
+		txmacro: txmacro@62ec0000 {
+			pinctrl-names = "default";
+			pinctrl-0 = <&tx_swr_active>;
+			compatible = "qcom,sm7150-lpass-tx-macro";
+			reg = <0 0x62ec0000 0 0x1000>;
+			status = "okay";
+
+			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK  LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				 <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
+				 <&vamacro>;
+
+			clock-names = "mclk", "npl", "macro", "fsgen";
+
+			#clock-cells = <0>;
+			clock-output-names = "mclk";
+			#sound-dai-cells = <1>;
+		};
+		swr2: soundwire@62ed0000 {
+			reg = <0 0x62ed0000 0 0x2000>;
+			compatible = "qcom,soundwire-v1.3.0";
+			interrupts = <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "core";
+			status = "okay";
+
+			clocks = <&txmacro>;
+			clock-names = "iface";
+			label = "TX";
+
+			qcom,din-ports = <5>;
+			qcom,dout-ports = <0>;
+			qcom,ports-sinterval-low =	/bits/ 8 <0xff 0x01 0x01 0x03 0x03>;
+			qcom,ports-offset1 =		/bits/ 8 <0xff 0x01 0x00 0x01 0x00>;
+			qcom,ports-offset2 =		/bits/ 8 <0xff 0x00 0x00 0x00 0x00>;
+			qcom,ports-block-pack-mode =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
+			qcom,ports-hstart =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
+			qcom,ports-hstop =		/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
+			qcom,ports-word-length =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
+			qcom,ports-block-group-count =	/bits/ 8 <0xff 0xff 0xff 0xff 0xff>;
+			qcom,ports-lane-control =	/bits/ 8 <0xff 0x00 0x01 0x00 0x01>;
+			#sound-dai-cells = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+		};
+ lpass_tlmm: pinctrl@62b40000 {
+  compatible = "qcom,sm7150-lpass-lpi-pinctrl";
+  reg = <0 0x62b40000 0 0x20000>;
+  gpio-controller;
+  #gpio-cells = <2>;
+  gpio-ranges = <&lpass_tlmm 0 0 32>;
+  clocks = <&q6afecc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+  clock-names = "core";
+  tx_swr_active: tx-swr-active-state {
+   clk-pins { pins = "gpio18"; function = "swr_tx_clk"; drive-strength = <8>; bias-bus-hold; };
+   data-pins { pins = "gpio19", "gpio20"; function = "swr_tx_data"; drive-strength = <8>; bias-bus-hold; };
+  };
+  rx_swr_active: rx-swr-active-state {
+   clk-pins { pins = "gpio21"; function = "swr_rx_clk"; drive-strength = <8>; bias-bus-hold; };
+   data-pins { pins = "gpio22", "gpio23"; function = "swr_rx_data"; drive-strength = <8>; bias-bus-hold; };
+  };
+  wcd_reset_active: wcd-reset-active-state {
+   pins = "gpio24"; function = "wcd_reset";
+   drive-strength = <16>; bias-disable;
+  };
+ };
+};
+&swr1 {
+ wcd937x_rx: codec@0,4 {
+  compatible = "sdw20217010a00";
+  reg = <0 4>;
+  qcom,rx-port-mapping = <1 2 3 4 5>;
+ };
+};
+&swr2 {
+ wcd937x_tx: codec@0,3 {
+  compatible = "sdw20217010a00";
+  reg = <0 3>;
+  qcom,tx-port-mapping = <2 3 4 5>;
+ };
+};
+&q6asmdai {
+ dai@1 { reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>; direction = <Q6ASM_DAI_TX>; };
+};

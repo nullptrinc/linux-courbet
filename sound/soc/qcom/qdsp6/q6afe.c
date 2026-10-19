@@ -372,6 +372,7 @@
 #define AFE_CLK_TOKEN		1024
 
 struct q6afe {
+	u32 vote_client_handle;
 	struct apr_device *apr;
 	struct device *dev;
 	struct q6core_svc_api_info ainfo;
@@ -973,11 +974,25 @@ static int q6afe_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 	res = data->payload;
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT: {
+		if (data->payload_size < sizeof(*res))
+			return -EINVAL;
 		if (res->status) {
 			dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
 				res->opcode, res->status);
 		}
 		switch (res->opcode) {
+		case AFE_CMD_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
+			/* Successful votes use the separate one-word handle reply. */
+			if (res->status) {
+				afe->result.opcode = AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST;
+				afe->result.status = res->status;
+				wake_up(&afe->wait);
+			}
+			break;
+		case AFE_CMD_REMOTE_LPASS_CORE_HW_DEVOTE_REQUEST:
+			afe->result = *res;
+			wake_up(&afe->wait);
+			break;
 		case AFE_PORT_CMD_SET_PARAM_V2:
 		case AFE_PORT_CMD_DEVICE_STOP:
 		case AFE_PORT_CMD_DEVICE_START:
@@ -999,8 +1014,12 @@ static int q6afe_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 	}
 		break;
 	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
+		if (data->payload_size < sizeof(u32))
+			return -EINVAL;
+		/* The response is a handle, not an APR status/result pair. */
+		afe->vote_client_handle = *(u32 *)data->payload;
 		afe->result.opcode = hdr->opcode;
-		afe->result.status = res->status;
+		afe->result.status = 0;
 		wake_up(&afe->wait);
 		break;
 	default:
@@ -1026,8 +1045,9 @@ int q6afe_get_port_id(int index)
 }
 EXPORT_SYMBOL_GPL(q6afe_get_port_id);
 
-static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
-			    struct q6afe_port *port, uint32_t rsp_opcode)
+static int __afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+			    struct q6afe_port *port, uint32_t rsp_opcode,
+			    u32 *client_handle)
 {
 	wait_queue_head_t *wait;
 	struct aprv2_ibasic_rsp_result_t *result;
@@ -1059,15 +1079,28 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	} else if (result->status > 0) {
 		dev_err(afe->dev, "DSP returned error[%x]\n",
 			result->status);
-		ret = -EINVAL;
+		/* SM7150 firmware can reject macro votes with 0x16 while
+		 * its audio services finish starting. A later vote succeeds.
+		 * Keep this retry condition limited to the vote command.
+		 */
+		ret = client_handle && result->status == 0x16 ? -EAGAIN : -EINVAL;
 	} else {
 		ret = 0;
 	}
 
 err:
+	/* Copy the reply before another serialized command can replace it. */
+	if (!ret && client_handle)
+		*client_handle = afe->vote_client_handle;
 	mutex_unlock(&afe->lock);
 
 	return ret;
+}
+
+static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+			  struct q6afe_port *port, uint32_t rsp_opcode)
+{
+	return __afe_apr_send_pkt(afe, pkt, port, rsp_opcode, NULL);
 }
 
 static int q6afe_set_param(struct q6afe *afe, struct q6afe_port *port,
@@ -1877,7 +1910,8 @@ int q6afe_unvote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 	vote_cfg->hw_block_id = hw_block_id;
 	vote_cfg->client_handle = client_handle;
 
-	ret = apr_send_pkt(afe->apr, pkt);
+	ret = afe_apr_send_pkt(afe, pkt, NULL,
+			       AFE_CMD_REMOTE_LPASS_CORE_HW_DEVOTE_REQUEST);
 	if (ret < 0)
 		dev_err(afe->dev, "AFE failed to unvote (%d)\n", hw_block_id);
 
@@ -1892,9 +1926,15 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 	struct q6afe *afe = dev_get_drvdata(dev->parent);
 	struct afe_cmd_remote_lpass_core_hw_vote_request *vote_cfg;
 	struct apr_pkt *pkt;
-	int ret = 0;
+	int ret = 0, attempt;
 	int pkt_size;
 	void *p;
+
+	if (!client_handle)
+		return -EINVAL;
+	*client_handle = 0;
+	if (!q6core_is_adsp_ready())
+		return -EPROBE_DEFER;
 
 	pkt_size = APR_HDR_SIZE + sizeof(*vote_cfg);
 	p = kzalloc(pkt_size, GFP_KERNEL);
@@ -1916,8 +1956,16 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 	strscpy(vote_cfg->client_name, client_name,
 			sizeof(vote_cfg->client_name));
 
-	ret = afe_apr_send_pkt(afe, pkt, NULL,
-			       AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST);
+	for (attempt = 0; attempt < 30; attempt++) {
+		ret = __afe_apr_send_pkt(afe, pkt, NULL,
+			       AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST,
+			       client_handle);
+		if (ret != -EAGAIN)
+			break;
+		msleep(100);
+	}
+	if (ret == -EAGAIN)
+		ret = -EPROBE_DEFER;
 	if (ret)
 		dev_err(afe->dev, "AFE failed to vote (%d)\n", hw_block_id);
 

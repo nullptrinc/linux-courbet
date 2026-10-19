@@ -3950,6 +3950,7 @@ static void rx_macro_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id rx_macro_dt_match[] = {
+	{ .compatible = "qcom,sm7150-lpass-rx-macro", .data = (void *)LPASS_MACRO_FLAG_HAS_NPL_CLOCK },
 	{
 		.compatible = "qcom,sc7280-lpass-rx-macro",
 		.data = (void *)LPASS_MACRO_FLAG_HAS_NPL_CLOCK,

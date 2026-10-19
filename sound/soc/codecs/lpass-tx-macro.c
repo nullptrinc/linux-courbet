@@ -2491,6 +2491,7 @@ static const struct tx_macro_data lpass_ver_11 = {
 };
 
 static const struct of_device_id tx_macro_dt_match[] = {
+	{ .compatible = "qcom,sm7150-lpass-tx-macro", .data = &lpass_ver_9 },
 	{
 		/*
 		 * The block is actually LPASS v9.4, but keep LPASS v9 match
