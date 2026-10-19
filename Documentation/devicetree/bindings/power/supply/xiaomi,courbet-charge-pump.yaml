@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/xiaomi,courbet-charge-pump.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+title: Xiaomi courbet supervised charge pump
+maintainers:
+  - moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+description: |
+  Courbet uses a standalone SC8551 or BQ25968 at I2C address 0x66. The driver
+  detects the populated variant by device ID, supervises the board's PM6150
+  battery thermistor, and permits charging only under a confirmed PPS contract.
+  The pump's unused external thermistor inputs are not connected on this board.
+properties:
+  compatible:
+    const: xiaomi,courbet-charge-pump
+  reg:
+    maxItems: 1
+  power-supplies:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 1
+    description: TCPM source power supply
+  io-channels:
+    maxItems: 1
+  io-channel-names:
+    const: batt-therm
+required:
+  - compatible
+  - reg
+  - power-supplies
+  - io-channels
+  - io-channel-names
+additionalProperties: false

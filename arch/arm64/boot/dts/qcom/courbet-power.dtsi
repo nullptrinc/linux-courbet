@@ -376,9 +376,21 @@
 	connector {
 		power-role = "dual";
 		try-power-role = "sink";
-		/* Native normal charging uses a 5 V contract. */
+		/* Fixed PD up to 9 V, or supervised PPS up to 10 V. */
 		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
-			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
-		op-sink-microwatt = <7500000>;
+			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)
+			     PDO_FIXED(9000, 2000, 0)
+			     PDO_PPS_APDO(3300, 10000, 3000)>;
+		op-sink-microwatt = <18000000>;
+	};
+};
+
+&i2c9 {
+	courbet_charge_pump: charger@66 {
+		compatible = "xiaomi,courbet-charge-pump";
+		reg = <0x66>;
+		power-supplies = <&pm6150_typec>;
+		io-channels = <&pm6150_adc ADC5_BAT_THERM_100K_PU>;
+		io-channel-names = "batt-therm";
 	};
 };

@@ -1098,12 +1098,18 @@ config FUEL_GAUGE_MM8013
 	  capacity, etc.
 
 config COURBET_POWER
-	bool "Xiaomi courbet battery and USB telemetry"
+	bool "Xiaomi courbet native charging and battery gauge"
 	depends on OF && REGMAP_SPMI && QCOM_SPMI_ADC5
 	help
-	  Read PM6150 QGauge, charger state and ADC measurements on courbet.
-	  Exposes battery and USB power supplies without changing charger policy.
-	  Capacity is estimated from the OEM battery voltage/temperature tables.
-	  Charger configuration is inherited from firmware.
+	  Own PM6150 SMB5 charging policy, QGauge coulomb accounting and TCPM
+	  PD/PPS requests, with supervised direct charging on supported pumps.
+
+config COURBET_CHARGE_PUMP
+	bool "Courbet BQ25968 / SC8551 supervised charge pump"
+	depends on I2C && OF && QCOM_SPMI_ADC5
+	select REGMAP_I2C
+	help
+	  Board-specific charge-pump telemetry and PPS-only enabling with an
+	  independent thermal/heartbeat supervisor and hardware watchdog.
 
 endif # POWER_SUPPLY

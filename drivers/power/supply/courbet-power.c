@@ -20,6 +20,7 @@
 #include <linux/pm_wakeirq.h>
 #include "courbet-power-model.h"
 #include "courbet-battery-profile.h"
+#include "courbet-fast-model.h"
 
 #define QG_TYPE 0x4804
 #define QG_SUBTYPE 0x4805
@@ -38,14 +39,16 @@ struct courbet_power {
 	struct device *dev;
 	struct regmap *regmap;
 	struct iio_channel *therm, *vbus, *die;
-	struct power_supply *source;
+	struct power_supply *source, *pump;
 	struct mutex lock;
 	struct courbet_soc soc;
-	s64 last_fifo_ns, boot_ns, rest_ns;
+	s64 last_fifo_ns, boot_ns, rest_ns, next_pps_ns;
 	u32 fifo_count, fifo_errors;
 	int requested_fcc, requested_fv, requested_icl, end_threshold;
 	int applied_fcc, applied_fv, source_limit, behaviour, thermal_block;
 	int last_online, policy_error, ocv_uv, resistance_uohm, safety_test;
+	int pps_state, pps_uv, fast_error, contract_uv, contract_type, fast_thermal;
+	bool pps_attempted, fast_allowed;
 	bool limit_block, restored, ready, suspended, full;
 	struct power_supply *battery, *usb;
 	struct power_supply_battery_info *info;
@@ -101,6 +104,8 @@ static int courbet_status(struct courbet_power *p, int *value)
 		return ret;
 	if (current_ua < -10000)
 		*value = POWER_SUPPLY_STATUS_DISCHARGING;
+	else if (READ_ONCE(p->pps_state) == 2 && current_ua > 10000)
+		*value = POWER_SUPPLY_STATUS_CHARGING;
 	else if ((state & 7) == 5)
 		*value = POWER_SUPPLY_STATUS_FULL;
 	else if ((state & 7) >= 1 && (state & 7) <= 4 && current_ua > 10000)
@@ -169,7 +174,9 @@ static int courbet_charger_init(struct courbet_power *p)
 		{ 0x1092, 0xff, 0x00 }, /* no inherited soft FCC compensation */
 		{ 0x1093, 0xff, 0x00 }, /* software derating uses the explicit FCC cap */
 		{ 0x1362, 0x0c, 0x08 }, /* BC1.2 on, autonomous HVDCP off */
-		{ 0x1344, 0x0f, 0x01 }, /* 5 V input; no autonomous QC voltage */
+		{ 0x1344, 0x0f, 0x08 }, /* PD/PPS continuous input allowance */
+		{ 0x1360, 0x0f, 0x0c }, /* 5..12 V HW range; sink PDOs capped at10 V */
+		{ 0x1150, 0x0f, 0x08 }, /* OEM 9 V buck frequency, before PD attach */
 		{ 0x1365, 0x10, 0x10 }, /* software ICL survives APSD */
 		{ 0x1366, 0x03, 0x01 }, /* high-current mode, software current cap */
 		{ 0x1342, 0x01, 0x01 }, /* ICL software override */
@@ -262,12 +269,230 @@ static int courbet_source_limit(struct courbet_power *p)
 	return 500000; /* unknown/floating sources never get an elevated cap */
 }
 
+/* Native TCPM PPS control. Never enable a direct-charge pump on fixed PD. */
+static int courbet_psy_set(struct power_supply *psy, enum power_supply_property prop, int value)
+{
+	union power_supply_propval v = { .intval = value };
+
+	return power_supply_set_property(psy, prop, &v);
+}
+
+static int courbet_psy_get(struct power_supply *psy, enum power_supply_property prop, int *value)
+{
+	union power_supply_propval v;
+	int ret = power_supply_get_property(psy, prop, &v);
+
+	if (!ret)
+		*value = v.intval;
+	return ret;
+}
+
+static int courbet_fast_stop(struct courbet_power *p)
+{
+	int ret, source_ret = 0;
+
+	if (!p->pump)
+		return 0;
+	ret = courbet_psy_set(p->pump, POWER_SUPPLY_PROP_ONLINE, 0);
+	/* Stop CP before asking the adapter to change to any fixed PDO. */
+	if (!ret && p->pps_state)
+		source_ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_ONLINE, 1);
+	if (!ret) {
+		p->pps_state = 0;
+		p->pps_uv = 0;
+	}
+	return ret ? ret : source_ret;
+}
+
+/* Returns 1 when CP owns cell charging, 0 for SMB5, negative on failure. */
+static int courbet_fast_update(struct courbet_power *p, bool allow, int voltage,
+			       int current_ua, int fcc, int fv, int icl, int source_type)
+{
+	int ret, online, min_uv, max_uv, max_ua, cp_online, cp_ibus, target, source_ua;
+
+	if (!allow || !p->fast_allowed || !p->pump || (source_type != POWER_SUPPLY_USB_TYPE_PD_PPS &&
+	     source_type != POWER_SUPPLY_USB_TYPE_PD)) {
+		if (p->pps_state) {
+			ret = courbet_fast_stop(p);
+			if (!ret)
+				p->pps_attempted = false;
+			return ret;
+		}
+		return 0;
+	}
+	if (p->pps_state && ktime_get_boottime_ns() < p->next_pps_ns)
+		return 1;
+	if (!p->pps_state) {
+		if (p->pps_attempted)
+			return 0;
+		p->pps_attempted = true;
+		ret = courbet_write(p, 0x1042, 1, 0);
+		if (!ret)
+			ret = courbet_write(p, 0x1370, 0xff, 6); /* 300 mA system reserve */
+		if (!ret)
+			ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_ONLINE, 2);
+		if (ret == -EOPNOTSUPP)
+			return 0; /* Fixed PD source: ordinary buck fast charging. */
+		if (ret)
+			goto fail;
+		p->pps_state = 1;
+		ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_ONLINE, &online);
+		if (!ret)
+			ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_VOLTAGE_MIN, &min_uv);
+		if (!ret)
+			ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_VOLTAGE_MAX, &max_uv);
+		if (!ret)
+			ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_CURRENT_MAX, &max_ua);
+		if (ret)
+			goto fail;
+		target = (voltage * 2 + 300000) / 20000 * 20000;
+		if (online != 2 || target < min_uv || target > max_uv ||
+		    target > COURBET_PPS_MAX_UV || max_ua < 1500000) {
+			ret = -ERANGE;
+			goto fail;
+		}
+		source_ua = min(min(icl, max_ua), fcc / 2 + 300000) / 50000 * 50000;
+		ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_CURRENT_NOW, source_ua);
+		if (!ret)
+			ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_VOLTAGE_NOW, target);
+		if (ret)
+			goto fail;
+		p->pps_uv = target;
+		p->next_pps_ns = ktime_get_boottime_ns() + NSEC_PER_SEC;
+		return 1; /* Allow fresh ADC conversions before enabling CP. */
+	}
+	ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_ONLINE, &online);
+	if (!ret && online != 2)
+		ret = -ENOTCONN;
+	if (!ret)
+		ret = courbet_psy_get(p->pump, POWER_SUPPLY_PROP_ONLINE, &cp_online);
+	if (!ret && p->pps_state == 2 && !cp_online)
+		ret = -EIO;
+	if (ret)
+		goto fail;
+	if (p->pps_state == 1) {
+		ret = courbet_psy_set(p->pump, POWER_SUPPLY_PROP_ONLINE, 1);
+		if (ret)
+			goto fail;
+		p->pps_state = 2;
+		p->next_pps_ns = ktime_get_boottime_ns() + NSEC_PER_SEC;
+		return 1;
+	}
+	source_ua = min(icl, fcc / 2 + 300000) / 50000 * 50000;
+	ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_CURRENT_NOW, &max_ua);
+	if (!ret && max_ua != source_ua)
+		ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_CURRENT_NOW, source_ua);
+	if (ret)
+		goto fail;
+	ret = courbet_psy_get(p->pump, POWER_SUPPLY_PROP_CURRENT_NOW, &cp_ibus);
+	if (ret)
+		goto fail;
+	target = courbet_pps_step(p->pps_uv, voltage, fv, current_ua,
+				 fcc, cp_ibus, min(1500000, icl - 300000), 0, 0);
+	/* A broken/stale cell measurement must never ramp the source unboundedly. */
+	if (!courbet_pump_running_window(target, voltage)) {
+		ret = -ERANGE;
+		goto fail;
+	}
+	if (target != p->pps_uv) {
+		ret = courbet_psy_set(p->source, POWER_SUPPLY_PROP_VOLTAGE_NOW, target);
+		if (ret)
+			goto fail;
+		p->pps_uv = target;
+	}
+	/* Do not restart a pump stopped by its independent supervisor mid-request. */
+	ret = courbet_psy_get(p->pump, POWER_SUPPLY_PROP_ONLINE, &cp_online);
+	if (!ret && !cp_online)
+		ret = -EIO;
+	if (!ret)
+		ret = courbet_psy_set(p->pump, POWER_SUPPLY_PROP_ONLINE, 1); /* heartbeat */
+	if (ret)
+		goto fail;
+	p->next_pps_ns = ktime_get_boottime_ns() + NSEC_PER_SEC;
+	return 1;
+fail:
+	p->fast_error = ret;
+	if (courbet_fast_stop(p))
+		return -EIO;
+	dev_warn_ratelimited(p->dev, "PPS stopped, using SMB5: %d\n", ret);
+	return 0;
+}
+
+static int courbet_adapter_config(struct courbet_power *p, int *source_type, int *vbus)
+{
+	int ret, online, threshold;
+
+	*source_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	*vbus = 5000000;
+	ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_ONLINE, &online);
+	if (ret || !online)
+		goto configure;
+	ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_USB_TYPE, source_type);
+	if (!ret)
+		ret = courbet_psy_get(p->source, POWER_SUPPLY_PROP_VOLTAGE_NOW, vbus);
+	if (ret)
+		return ret;
+	if (*vbus < 4500000 || *vbus > COURBET_PPS_MAX_UV)
+		return -ERANGE;
+configure:
+	p->contract_uv = *vbus;
+	p->contract_type = *source_type;
+	/* Continuous input allowance covers attach at 5 V, fixed 9 V and PPS. */
+	ret = courbet_write(p, 0x1344, 0x0f, 8);
+	if (!ret)
+		ret = courbet_write(p, 0x1150, 0x0f, *vbus >= 9000000 ? 8 :
+				    *vbus > 5500000 ? 11 : 15);
+	threshold = clamp(*vbus / 1000 - 1000, 4300, 8800);
+	threshold = threshold < 5600 ? (threshold - 4000) / 100 :
+		(threshold - 5600) / 200 + 16;
+	if (!ret)
+		ret = courbet_write(p, 0x1384, 0x3f, threshold);
+	return ret;
+}
+
+static ssize_t fast_charge_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct courbet_power *p = dev_get_drvdata(dev);
+	ssize_t n;
+
+	mutex_lock(&p->lock);
+	n = sysfs_emit(buf, "mode=%s allowed=%d contract_uv=%d pps_uv=%d error=%d\n",
+			p->pps_state == 2 ? "pps-pump" : p->pps_state == 1 ? "pps-start" :
+			p->contract_type == POWER_SUPPLY_USB_TYPE_PD_PPS ? "pps-buck" :
+			p->contract_type == POWER_SUPPLY_USB_TYPE_PD ? "pd-buck" : "usb",
+			p->fast_allowed, p->contract_uv, p->pps_uv, p->fast_error);
+	mutex_unlock(&p->lock);
+	return n;
+}
+
+/* 0 disables pump requests; 1 permits supervised PPS. Fixed PD stays with TCPM. */
+static ssize_t fast_charge_store(struct device *dev, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct courbet_power *p = dev_get_drvdata(dev);
+	bool allow;
+	int ret = kstrtobool(buf, &allow);
+
+	if (ret)
+		return ret;
+	mutex_lock(&p->lock);
+	p->fast_allowed = allow;
+	p->pps_attempted = false;
+	p->fast_error = 0;
+	if (!allow)
+		ret = courbet_fast_stop(p);
+	mutex_unlock(&p->lock);
+	mod_delayed_work(system_wq, &p->poll, 0);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(fast_charge);
+
 static int courbet_policy(struct courbet_power *p, int temp_deci_c,
-			  int die_millic, int voltage_uv)
+			  int die_millic, int voltage_uv, int current_ua)
 {
 	struct courbet_charge_limits limits;
 	unsigned int faults, thermal, state;
-	int online, ret, icl, percent;
+	int online, ret, icl, percent, source_type, source_uv, pump, buck_icl;
 	bool enable;
 
 	ret = courbet_online(p, &online);
@@ -291,6 +516,10 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 		if (ret)
 			goto fail;
 		p->last_online = online;
+		if (!online) {
+			p->pps_attempted = false;
+			p->fast_error = 0;
+		}
 	}
 	limits = courbet_charge_limits(temp_deci_c, p->thermal_block,
 				       p->requested_fcc, p->requested_fv);
@@ -304,10 +533,26 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 		p->behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO &&
 		!(faults & BIT(1)) && !(thermal & 0x0f) &&
 		die_millic < 85000 && voltage_uv < 4500000;
+	ret = courbet_adapter_config(p, &source_type, &source_uv);
+	if (ret)
+		goto fail;
 	icl = min(p->requested_icl, courbet_source_limit(p));
+	if (source_uv <= 5500000)
+		icl = min(icl, 1500000);
 	if (die_millic >= 75000)
 		icl = min(icl, 500000);
-	ret = courbet_write(p, 0x1370, 0xff, icl / 50000);
+	p->fast_thermal = courbet_fast_thermal_block(temp_deci_c, p->fast_thermal);
+	pump = courbet_fast_update(p,
+		!p->fast_thermal && courbet_pump_allowed(temp_deci_c, voltage_uv, limits.fv_uv,
+			limits.fcc_ua, icl, percent, p->end_threshold, enable, die_millic),
+		voltage_uv, current_ua, limits.fcc_ua, limits.fv_uv, icl, source_type);
+	if (pump < 0) {
+		ret = pump;
+		goto fail;
+	}
+	buck_icl = pump ? 300000 : icl;
+	limits.fcc_ua = min(limits.fcc_ua, COURBET_BUCK_FCC_UA);
+	ret = courbet_write(p, 0x1370, 0xff, buck_icl / 50000);
 	if (ret)
 		goto fail;
 	ret = courbet_write(p, 0x1061, 0xff, limits.fcc_ua / 50000);
@@ -319,7 +564,7 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	ret = courbet_write(p, 0x1340, 1, icl < 50000 ? 1 : 0);
 	if (ret)
 		goto fail;
-	ret = courbet_write(p, 0x1042, 1, enable ? 1 : 0);
+	ret = courbet_write(p, 0x1042, 1, enable && !pump ? 1 : 0);
 	if (ret)
 		goto fail;
 	ret = regmap_write(p->regmap, 0x1643, BIT(0)); /* self-clearing pet command */
@@ -330,7 +575,7 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	p->applied_fv = limits.fv_uv / 10000 * 10000;
 	p->source_limit = icl;
 	if (!regmap_read(p->regmap, CHG_STATE, &state) && (state & 7) == 5 &&
-	    enable && p->end_threshold == 100 && temp_deci_c >= 150 &&
+	    enable && !pump && p->end_threshold == 100 && temp_deci_c >= 150 &&
 	    temp_deci_c < 430 && voltage_uv >= limits.fv_uv - 50000) {
 		p->soc.charge_uams = (s64)p->soc.full_uah * COURBET_UAMS_PER_UAH;
 		p->full = true;
@@ -338,6 +583,7 @@ static int courbet_policy(struct courbet_power *p, int temp_deci_c,
 	return 0;
 fail:
 	p->policy_error = ret;
+	courbet_fast_stop(p);
 	regmap_update_bits(p->regmap, 0x1042, 1, 0);
 	return ret;
 }
@@ -533,7 +779,7 @@ static DEVICE_ATTR_RW(charger_safety_test);
 
 static struct attribute *courbet_power_attrs[] = {
 	&dev_attr_soc_state.attr, &dev_attr_gauge_diagnostics.attr,
-	&dev_attr_charger_safety_test.attr, NULL,
+	&dev_attr_charger_safety_test.attr, &dev_attr_fast_charge.attr, NULL,
 };
 ATTRIBUTE_GROUPS(courbet_power);
 
@@ -683,7 +929,7 @@ static int courbet_usb_get(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		ret = regmap_read(p->regmap, USB_ICL, &raw);
 		if (!ret)
-			value->intval = raw * 50000;
+			value->intval = READ_ONCE(p->pps_state) ? READ_ONCE(p->source_limit) : raw * 50000;
 		return ret;
 	default:
 		return -EINVAL;
@@ -743,8 +989,13 @@ static int courbet_battery_set(struct power_supply *psy,
 out:
 	/* A successful inhibit request takes effect before returning to userspace. */
 	if (!ret && (p->behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE ||
-		     p->requested_fcc == 0))
-		ret = courbet_write(p, 0x1042, 1, 0);
+		     p->requested_fcc == 0)) {
+		ret = courbet_fast_stop(p);
+		if (!ret) {
+			p->pps_attempted = false;
+			ret = courbet_write(p, 0x1042, 1, 0);
+		}
+	}
 	mutex_unlock(&p->lock);
 	if (!ret)
 		mod_delayed_work(system_wq, &p->poll, 0);
@@ -766,6 +1017,8 @@ static int courbet_usb_set(struct power_supply *psy, enum power_supply_property 
 		return -EINVAL;
 	mutex_lock(&p->lock);
 	p->requested_icl = value->intval / 50000 * 50000;
+	if (!p->requested_icl)
+		courbet_fast_stop(p);
 	mutex_unlock(&p->lock);
 	mod_delayed_work(system_wq, &p->poll, 0);
 	return 0;
@@ -800,6 +1053,33 @@ static const struct power_supply_desc courbet_usb_desc = {
 	.external_power_changed = courbet_external_changed,
 };
 
+/* A missing/failed pump must not prevent ordinary SMB5 policy or telemetry. */
+static void courbet_find_pump(struct courbet_power *p)
+{
+	struct power_supply *pump;
+	struct device_link *link;
+
+	if (p->pump)
+		return;
+	pump = power_supply_get_by_name("courbet-charge-pump");
+	if (!pump)
+		return;
+	link = device_link_add(p->dev, pump->dev.parent, DL_FLAG_AUTOREMOVE_CONSUMER);
+	if (!link) {
+		power_supply_put(pump);
+		return;
+	}
+	p->pump = pump;
+}
+
+static void courbet_pump_release(void *data)
+{
+	struct courbet_power *p = data;
+
+	if (p->pump)
+		power_supply_put(p->pump);
+}
+
 static void courbet_poll(struct work_struct *work)
 {
 	struct courbet_power *p = container_of(to_delayed_work(work),
@@ -819,6 +1099,7 @@ static void courbet_poll(struct work_struct *work)
 		ret = iio_read_channel_processed(p->die, &die);
 	if (ret < 0 || voltage < 2500000 || voltage > 4700000 || abs(current_ua) > 10000000) {
 		p->policy_error = ret < 0 ? ret : -ERANGE;
+		courbet_fast_stop(p);
 		regmap_update_bits(p->regmap, 0x1042, 1, 0);
 		goto reschedule;
 	}
@@ -842,9 +1123,10 @@ static void courbet_poll(struct work_struct *work)
 	} else {
 		p->rest_ns = 0;
 	}
-	courbet_policy(p, temp, die, voltage);
+	courbet_find_pump(p);
+	courbet_policy(p, temp, die, voltage, current_ua);
 reschedule:
-	schedule_delayed_work(&p->poll, 2 * HZ);
+	schedule_delayed_work(&p->poll, HZ);
 out:
 	mutex_unlock(&p->lock);
 	power_supply_changed(p->battery);
@@ -867,6 +1149,7 @@ static void courbet_power_stop(void *data)
 
 	WRITE_ONCE(p->ready, false);
 	cancel_delayed_work_sync(&p->poll);
+	courbet_fast_stop(p);
 	regmap_update_bits(p->regmap, 0x1042, 1, 0);
 	regmap_update_bits(p->regmap, 0x1651, 0xc2, 0);
 }
@@ -884,8 +1167,10 @@ static int courbet_power_suspend(struct device *dev)
 	WRITE_ONCE(p->suspended, true);
 	cancel_delayed_work_sync(&p->poll);
 	mutex_lock(&p->lock);
-	/* Hardware JEITA, termination, safety timer and QG FIFO stay active. */
-	ret = courbet_write(p, 0x1651, 0xc2, 0);
+	/* CP stops for suspend; SMB5 JEITA/termination and QG FIFO stay active. */
+	ret = courbet_fast_stop(p);
+	if (!ret)
+		ret = courbet_write(p, 0x1651, 0xc2, 0);
 	mutex_unlock(&p->lock);
 	if (ret) {
 		WRITE_ONCE(p->suspended, false);
@@ -933,12 +1218,16 @@ static int courbet_power_probe(struct platform_device *pdev)
 	p->requested_fcc = COURBET_MAX_FCC_UA;
 	p->requested_fv = COURBET_MAX_FV_UV;
 	p->requested_icl = COURBET_MAX_ICL_UA;
+	p->fast_allowed = true;
 	p->end_threshold = 100;
 	p->source = devm_power_supply_get_by_reference(p->dev, "power-supplies");
 	if (IS_ERR(p->source))
 		return dev_err_probe(p->dev, PTR_ERR(p->source), "No TCPM source supply\n");
 	if (!p->source)
 		return -EPROBE_DEFER;
+	ret = devm_add_action_or_reset(p->dev, courbet_pump_release, p);
+	if (ret)
+		return ret;
 	ret = devm_delayed_work_autocancel(p->dev, &p->poll, courbet_poll);
 	if (ret)
 		return ret;

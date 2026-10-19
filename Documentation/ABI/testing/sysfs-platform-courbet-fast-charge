@@ -1,0 +1,18 @@
+What:           /sys/class/power_supply/battery/device/fast_charge
+Date:           October 2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Reads mode (usb, pd-buck, pps-start, pps-pump, pps-buck),
+                PPS permission, negotiated/requested voltages and last error.
+                Root writes 0/1 to disable/permit PPS pump requests. Disabling
+                stops the pump before returning to fixed PD. A new permission
+                write clears the per-attachment failure latch for testing.
+                Fixed PD negotiation remains owned by TCPM.
+
+What:           /sys/bus/i2c/devices/9-0066/diagnostics
+Date:           October 2026
+Contact:        moe-takasaki <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Detected pump variant, charge-enable state, cached ADC values,
+                faults and supervisor error. Diagnostic reads do not touch I2C
+                and cannot accidentally refresh the hardware watchdog.
