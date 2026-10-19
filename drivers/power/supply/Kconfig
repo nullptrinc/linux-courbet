@@ -1097,4 +1097,13 @@ config FUEL_GAUGE_MM8013
 	  the state of charge, temperature, cycle count, actual and design
 	  capacity, etc.
 
+config COURBET_POWER
+	bool "Xiaomi courbet battery and USB telemetry"
+	depends on OF && REGMAP_SPMI && QCOM_SPMI_ADC5
+	help
+	  Read PM6150 QGauge, charger state and ADC measurements on courbet.
+	  Exposes battery and USB power supplies without changing charger policy.
+	  Capacity is estimated from the OEM battery voltage/temperature tables.
+	  Charger configuration is inherited from firmware.
+
 endif # POWER_SUPPLY
