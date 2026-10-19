@@ -171,6 +171,29 @@ static void courbet_fpc_remove(struct platform_device *pdev)
 	misc_deregister(&fpc->misc);
 }
 
+/* Android's FPC transport waits for a HIGH level, not just a past edge.
+ * Secure-world SPI commands also produce interrupts that may have been
+ * cleared before userspace returns. Expose the live level so that queued
+ * notifications cannot be mistaken for a current sensor request.
+ */
+static ssize_t irq_level_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct courbet_fpc *fpc = dev_get_drvdata(dev);
+	int level = gpiod_get_value_cansleep(fpc->irq_gpio);
+
+	if (level < 0)
+		return level;
+	return sysfs_emit(buf, "%d\n", level);
+}
+static DEVICE_ATTR_RO(irq_level);
+
+static struct attribute *courbet_fpc_attrs[] = {
+	&dev_attr_irq_level.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(courbet_fpc);
+
 static const struct of_device_id courbet_fpc_of_match[] = {
 	{ .compatible = "nullptrinc,courbet-fpc" },
 	{ }
@@ -187,6 +210,7 @@ static struct platform_driver courbet_fpc_driver = {
 		 * board driver must not be detached through sysfs while in use.
 		 */
 		.suppress_bind_attrs = true,
+		.dev_groups = courbet_fpc_groups,
 	},
 };
 module_platform_driver(courbet_fpc_driver);

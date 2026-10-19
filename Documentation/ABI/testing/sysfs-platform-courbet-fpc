@@ -1,0 +1,13 @@
+What:           /sys/bus/platform/devices/.../irq_level
+Date:           October 2026
+Contact:        LunarProject <199255379+moe-takasaki@users.noreply.github.com>
+Description:
+                Read-only current logical level (0 or 1) of the courbet
+                fingerprint sensor IRQ GPIO. Also reachable through
+                /sys/class/misc/courbet-fpc/device/irq_level.
+
+                A queued /dev/courbet-fpc edge notification does not imply
+                that the line is still asserted. After consuming pending
+                notifications, check this level before polling for a new
+                event. Recheck after wakeup. Reading does not change power,
+                acknowledge the sensor, or consume character-device events.
